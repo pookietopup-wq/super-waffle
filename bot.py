@@ -116,6 +116,12 @@ def init_db():
         if not count:
             seed_products(c)
 
+        # Existing database migration: Weekly Lite -> UC
+        c.execute(
+            "UPDATE products SET category='uc' "
+            "WHERE item_code='lite:1' AND title='Weekly Lite'"
+        )
+
 
 def seed_products(c):
     rows = []
@@ -130,7 +136,8 @@ def seed_products(c):
         ("800:1", "Monthly"),
         ("810:1", "810 UC / 1240 Diamonds"),
         ("1625:1", "1625 UC / 2530 Diamonds"),
-        ("2000:1", "2000 UC")
+        ("2000:1", "2000 UC"),
+        ("lite:1", "Weekly Lite")
     ]:
         rows.append(("bd", "uc", title, code, "tp", 0, 0))
 
@@ -174,7 +181,6 @@ def seed_products(c):
         rows.append(("my", "shell", title, code, "shell", 0, 0))
 
     for code, title in [
-        ("lite:1", "Weekly Lite"),
         ("evo3:1", "3-day Evo Pass"),
         ("evo7:1", "7-day Evo Pass"),
         ("evo30:1", "30-day Evo Pass"),
@@ -281,6 +287,7 @@ async def notify_admins(text):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
+    user_states.pop(u.id, None)
 
     with db() as c:
         c.execute(
@@ -296,9 +303,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔥 Welcome to HB TOP UP!\n\nChoose a service below.",
         reply_markup=home_kb(is_admin(u.id))
     )
-
-
-# ================= CALLBACKS =================
+  # ================= CALLBACKS =================
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -327,6 +332,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     if data == "deposit":
+        user_states.pop(uid, None)
         kb = [
             [InlineKeyboardButton("⚡ Auto Payment (Pinbot)", callback_data="deposit_auto")],
             [InlineKeyboardButton("🏦 Manual Payment", callback_data="deposit_manual")],
@@ -344,10 +350,13 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text(
             "⚡ Auto Payment\n"
             "Payment করার পর Transaction ID পাঠান।\n"
-            "Pinbot দিয়ে verify হবে। PIN/Password পাঠাবেন না।"
+            "Pinbot দিয়ে verify হবে। PIN/Password পাঠাবেন না।\n\n"
+            "⬅️ Back করতে /cancel পাঠান।"
         )
 
     if data == "deposit_manual":
+        user_states.pop(uid, None)
+
         with db() as c:
             methods = c.execute(
                 "SELECT * FROM payment_methods ORDER BY name"
@@ -356,7 +365,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not methods:
             return await q.edit_message_text(
                 "Manual payment is not configured yet. Contact support.",
-                reply_markup=home_kb(is_admin(uid))
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Back", callback_data="deposit")]
+                ])
             )
 
         kb = [
@@ -368,6 +379,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             for m in methods
         ]
+
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="deposit")])
 
         return await q.edit_message_text(
             "🏦 Choose a payment method:",
@@ -384,7 +397,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ).fetchone()
 
         if not m:
-            return await q.edit_message_text("Payment method unavailable.")
+            return await q.edit_message_text(
+                "Payment method unavailable.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Back", callback_data="deposit_manual")]
+                ])
+            )
 
         user_states[uid] = {
             "action": "manual_amount",
@@ -395,7 +413,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏦 {m['name']}\n"
             f"Number: {m['number']}\n"
             f"Type: {m['instruction']}\n\n"
-            "Send the amount you paid (BDT)."
+            "Send the amount you paid (BDT).\n"
+            "Use /cancel to go back."
         )
 
     # Manual deposit approve/reject
@@ -454,11 +473,37 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "likes":
+        with db() as c:
+            ps = c.execute(
+                "SELECT * FROM products WHERE category='likes' "
+                "AND enabled=1 ORDER BY id"
+            ).fetchall()
+
+        kb = [
+            [
+                InlineKeyboardButton(
+                    f"{p['title']} — {money(p['price'])}",
+                    callback_data=f"prod:{p['id']}"
+                )
+            ]
+            for p in ps
+        ]
+
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="home")])
+
+        return await q.edit_message_text(
+            "❤️ Select Likes package:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
     if data == "regions":
         kb = [
             [InlineKeyboardButton(REGIONS[k], callback_data="region:" + k)]
             for k in REGIONS
         ]
+
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="home")])
 
         return await q.edit_message_text(
             "🌍 Select region:",
@@ -468,16 +513,20 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("region:"):
         reg = data.split(":")[1]
 
+        if reg not in REGIONS:
+            return await q.answer("Invalid region", show_alert=True)
+
         with db() as c:
             cats = c.execute(
-                "SELECT DISTINCT category FROM products WHERE region=? AND enabled=1",
+                "SELECT DISTINCT category FROM products "
+                "WHERE region=? AND enabled=1",
                 (reg,)
             ).fetchall()
 
         labels = {
             "uc": "💎 UC",
             "shell": "🐚 Shell",
-            "tp": "🎮 Top-up / Pass",
+            "tp": "🎮 Top-up",
             "pass": "🎟 Passes",
             "likes": "❤️ Likes"
         }
@@ -492,17 +541,20 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for x in cats
         ]
 
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="regions")])
+
         return await q.edit_message_text(
             f"{REGIONS[reg]} — select category:",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
     if data.startswith("cat:"):
-        _, reg, cat = data.split(":")
+        _, reg, cat = data.split(":", 2)
 
         with db() as c:
             ps = c.execute(
-                "SELECT * FROM products WHERE region=? AND category=? AND enabled=1 ORDER BY id",
+                "SELECT * FROM products WHERE region=? AND category=? "
+                "AND enabled=1 ORDER BY id",
                 (reg, cat)
             ).fetchall()
 
@@ -515,6 +567,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             for p in ps
         ]
+
+        kb.append([
+            InlineKeyboardButton("⬅️ Back", callback_data=f"region:{reg}")
+        ])
 
         return await q.edit_message_text(
             "Select product:",
@@ -531,11 +587,20 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ).fetchone()
 
         if not p:
-            return await q.edit_message_text("Product unavailable.")
+            return await q.edit_message_text(
+                "Product unavailable.",
+                reply_markup=home_kb(is_admin(uid))
+            )
 
         if p["price"] <= 0:
             return await q.edit_message_text(
-                "এই Product-এর Selling Price Admin এখনো সেট করেনি।"
+                "এই Product-এর Selling Price Admin এখনো সেট করেনি।",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "⬅️ Back",
+                        callback_data=f"cat:{p['region']}:{p['category']}"
+                    )
+                ]])
             )
 
         user_states[uid] = {
@@ -551,7 +616,11 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return await q.edit_message_text(
             f"📦 {p['title']}\n"
-            f"💰 Price: {money(p['price'])}\n{ask}"
+            f"💰 Price: {money(p['price'])}\n{ask}\n\n"
+            "Use /cancel to go back to Home.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Home", callback_data="home")
+            ]])
         )
 
     if data == "myorders":
@@ -582,6 +651,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_admin(uid):
             return await q.answer("Not authorized", show_alert=True)
 
+        user_states.pop(uid, None)
+
         return await q.edit_message_text(
             "👑 Admin Panel",
             reply_markup=admin_kb()
@@ -608,7 +679,13 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         user_states[uid] = {"action": "admin_products"}
-        return await q.edit_message_text(msg[:4000])
+
+        return await q.edit_message_text(
+            msg[:4000],
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
+            ]])
+        )
 
     if data == "ap_deposits":
         if not is_admin(uid):
@@ -644,7 +721,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text(
             f"👥 Total users: {n}\n"
             "Send: ADD user_id amount OR SUB user_id amount",
-            reply_markup=admin_kb()
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
+            ]])
         )
 
     if data == "ap_stats":
@@ -670,7 +749,13 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         user_states[uid] = {"action": "broadcast"}
-        return await q.edit_message_text("Send the broadcast message.")
+
+        return await q.edit_message_text(
+            "Send the broadcast message. Use /cancel to go back.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
+            ]])
+        )
 
     if data == "ap_force":
         if not is_admin(uid):
@@ -686,7 +771,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text(
             "Force Join channels:\n"
             + "\n".join(x["channel"] for x in chans)
-            + "\n\nSend ADD @channel or DEL @channel"
+            + "\n\nSend ADD @channel or DEL @channel\nUse /cancel to go back.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
+            ]])
         )
 
     if data == "ap_payments":
@@ -712,7 +800,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "SET bKash|018XXXXXXXX|Send Money\n"
             + "DEL bKash\n\n"
             + "Send a command below.",
-            reply_markup=admin_kb()
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
+            ]])
         )
 
     if data == "ap_api":
@@ -797,9 +887,7 @@ async def process_deposit(uid, trxid):
     return "❌ Verification failed: " + str(
         data.get("error", data.get("message", "Please check the Transaction ID."))
     )
-
-
-# ================= ORDERS =================
+  # ================= ORDERS =================
 
 async def place_order(uid, pid, playerid):
     with db() as c:
@@ -1002,6 +1090,64 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     st = user_states.get(uid)
 
+    # Manual payment SET/DEL works even when admin state is missing.
+    if is_admin(uid):
+        normalized = msg.replace("｜", "|").replace("¦", "|")
+        parts = [x.strip() for x in normalized.split("|", 2)]
+
+        if parts and parts[0].upper() in ("SET", "DEL"):
+            try:
+                if len(parts) == 3 and parts[0].upper() == "SET":
+                    name, number, instruction = parts
+
+                    if not name or not number:
+                        raise ValueError("Missing method name or number")
+
+                    with db() as c:
+                        c.execute(
+                            "INSERT INTO payment_methods(name,number,instruction) "
+                            "VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                            "number=excluded.number,instruction=excluded.instruction",
+                            (name, number, instruction or "Send Money")
+                        )
+
+                    user_states.pop(uid, None)
+
+                    return await update.message.reply_text(
+                        f"✅ Manual payment method saved!\n"
+                        f"Method: {name}\n"
+                        f"Number: {number}\n"
+                        f"Instruction: {instruction or 'Send Money'}",
+                        reply_markup=admin_kb()
+                    )
+
+                if len(parts) == 2 and parts[0].upper() == "DEL":
+                    with db() as c:
+                        cur = c.execute(
+                            "DELETE FROM payment_methods WHERE name=?",
+                            (parts[1],)
+                        )
+
+                    user_states.pop(uid, None)
+
+                    return await update.message.reply_text(
+                        "✅ Payment method deleted."
+                        if cur.rowcount else "⚠️ Payment method not found.",
+                        reply_markup=admin_kb()
+                    )
+
+                return await update.message.reply_text(
+                    "Wrong format. Use exactly:\n"
+                    "SET bKash|01820583511|Send Money\n"
+                    "DEL bKash"
+                )
+
+            except Exception:
+                log.exception("Manual payment settings command failed")
+                return await update.message.reply_text(
+                    "Could not save payment method. Check the details and try again."
+                )
+
     if not st:
         return
 
@@ -1135,74 +1281,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states.pop(uid, None)
         return
 
-    # FIXED MANUAL PAYMENT SETTINGS COMMAND HANDLER
-    if action == "admin_payments":
-        parts = [
-            x.strip()
-            for x in re.split(r"[|｜¦]", msg, maxsplit=2)
-        ]
-
-        try:
-            if len(parts) == 3 and parts[0].upper() == "SET":
-                name, number, instruction = parts
-
-                if not name or not number:
-                    return await update.message.reply_text(
-                        "Invalid details.\n"
-                        "Example: SET bKash|01820583511|Send Money"
-                    )
-
-                with db() as c:
-                    c.execute(
-                        """INSERT INTO payment_methods
-                        (name,number,instruction)
-                        VALUES(?,?,?)
-                        ON CONFLICT(name) DO UPDATE SET
-                        number=excluded.number,
-                        instruction=excluded.instruction""",
-                        (name, number, instruction or "Send Money")
-                    )
-
-                user_states.pop(uid, None)
-
-                return await update.message.reply_text(
-                    f"✅ Manual payment method saved!\n\n"
-                    f"Method: {name}\n"
-                    f"Number: {number}\n"
-                    f"Instruction: {instruction or 'Send Money'}",
-                    reply_markup=admin_kb()
-                )
-
-            if len(parts) == 2 and parts[0].upper() == "DEL":
-                with db() as c:
-                    cur = c.execute(
-                        "DELETE FROM payment_methods WHERE name=?",
-                        (parts[1],)
-                    )
-                    deleted = cur.rowcount
-
-                user_states.pop(uid, None)
-
-                return await update.message.reply_text(
-                    "✅ Payment method deleted."
-                    if deleted else "⚠️ Method not found.",
-                    reply_markup=admin_kb()
-                )
-
-            return await update.message.reply_text(
-                "Wrong format. Copy exactly:\n"
-                "SET bKash|01820583511|Send Money\n"
-                "DEL bKash"
-            )
-
-        except Exception as e:
-            log.exception("Manual payment settings error")
-
-            return await update.message.reply_text(
-                f"Could not save method: {e}"
-            )
-
-    elif action == "admin_products":
+    if action == "admin_products":
         parts = msg.split()
 
         try:
@@ -1213,9 +1292,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         (float(parts[2]), int(parts[1]))
                     )
 
-                    await update.message.reply_text(
-                        "✅ Price updated."
-                    )
+                    await update.message.reply_text("✅ Price updated.")
 
                 elif len(parts) == 2 and parts[0].upper() in ("ON", "OFF"):
                     c.execute(
@@ -1226,9 +1303,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     )
 
-                    await update.message.reply_text(
-                        "✅ Product updated."
-                    )
+                    await update.message.reply_text("✅ Product updated.")
 
                 else:
                     await update.message.reply_text(
@@ -1407,7 +1482,7 @@ tg.add_handler(
 async def startup():
     init_db()
 
-    if "PASTE_NEW" in BOT_TOKEN or "PASTE_NEW" in PINBOT_API_KEY:
+    if "PASTE_YOUR" in BOT_TOKEN or "PASTE_YOUR" in PINBOT_API_KEY:
         log.warning("Set BOT_TOKEN and PINBOT_API_KEY before deployment")
 
     await tg.initialize()
