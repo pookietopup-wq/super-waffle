@@ -7,11 +7,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 # ===================== CONFIG =====================
-BOT_TOKEN = "PASTE_NEW_BOT_TOKEN_HERE"
+BOT_TOKEN = "9104234502:AAGPDLTCfz_m5TZXTCSYuPltAtZg8--ajkQ"
 OWNER_ID = 8689170506
 ADMIN_IDS = []  # Add numeric Telegram admin IDs, e.g. [123456789]
 MERCHANT_ID = "6094745816"
-PINBOT_API_KEY = "PASTE_NEW_PINBOT_API_KEY_HERE"
+PINBOT_API_KEY = "fl_e4008331eb8226bb42bbfb317ac28c7df3f5b22c2144cf57"
 BASE_URL = "https://api.pinbot.shop"
 PUBLIC_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 PORT = int(os.getenv("PORT", "10000"))
