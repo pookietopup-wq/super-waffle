@@ -303,9 +303,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔥 Welcome to HB TOP UP!\n\nChoose a service below.",
         reply_markup=home_kb(is_admin(u.id))
     )
-```**সম্পূর্ণ কোড — অংশ ২/৫**
 
-```python
         user_states.pop(uid, None)
 
         return await q.edit_message_text(
