@@ -15,7 +15,7 @@ PINBOT_API_KEY = "fl_e4008331eb8226bb42bbfb317ac28c7df3f5b22c2144cf57"
 BASE_URL = "https://api.pinbot.shop"
 PUBLIC_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 PORT = int(os.getenv("PORT", "10000"))
-DB_PATH = os.getenv("DB_PATH", "/var/data/hb_topup.sqlite3")
+DB_PATH = os.getenv("DB_PATH", "./data/hb_topup.sqlite3")
 SUPPORT = "@HASAN_BOT_DEV"
 CURRENCY = "BDT"
 # Set region labels/codes only after confirming Pinbot's accepted region values.
