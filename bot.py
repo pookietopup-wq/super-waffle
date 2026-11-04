@@ -116,7 +116,7 @@ def init_db():
         if not count:
             seed_products(c)
 
-        # Existing database migration: Weekly Lite -> UC
+        # Move Weekly Lite to UC for existing databases too.
         c.execute(
             "UPDATE products SET category='uc' "
             "WHERE item_code='lite:1' AND title='Weekly Lite'"
@@ -303,354 +303,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔥 Welcome to HB TOP UP!\n\nChoose a service below.",
         reply_markup=home_kb(is_admin(u.id))
     )
-  # ================= CALLBACKS =================
+```**সম্পূর্ণ কোড — অংশ ২/৫**
 
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    uid = q.from_user.id
-    data = q.data
-
-    if data == "home":
-        user_states.pop(uid, None)
-        return await q.edit_message_text(
-            "🔥 HB TOP UP\nChoose an option:",
-            reply_markup=home_kb(is_admin(uid))
-        )
-
-    if data == "wallet":
-        with db() as c:
-            bal = c.execute(
-                "SELECT balance FROM users WHERE id=?",
-                (uid,)
-            ).fetchone()
-
-        return await q.edit_message_text(
-            f"💰 Your Wallet: {money(bal['balance'] if bal else 0)}",
-            reply_markup=home_kb(is_admin(uid))
-        )
-
-    if data == "deposit":
-        user_states.pop(uid, None)
-        kb = [
-            [InlineKeyboardButton("⚡ Auto Payment (Pinbot)", callback_data="deposit_auto")],
-            [InlineKeyboardButton("🏦 Manual Payment", callback_data="deposit_manual")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="home")]
-        ]
-
-        return await q.edit_message_text(
-            "💳 Select your deposit method:",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    if data == "deposit_auto":
-        user_states[uid] = {"action": "deposit"}
-
-        return await q.edit_message_text(
-            "⚡ Auto Payment\n"
-            "Payment করার পর Transaction ID পাঠান।\n"
-            "Pinbot দিয়ে verify হবে। PIN/Password পাঠাবেন না।\n\n"
-            "⬅️ Back করতে /cancel পাঠান।"
-        )
-
-    if data == "deposit_manual":
-        user_states.pop(uid, None)
-
-        with db() as c:
-            methods = c.execute(
-                "SELECT * FROM payment_methods ORDER BY name"
-            ).fetchall()
-
-        if not methods:
-            return await q.edit_message_text(
-                "Manual payment is not configured yet. Contact support.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Back", callback_data="deposit")]
-                ])
-            )
-
-        kb = [
-            [
-                InlineKeyboardButton(
-                    f"{m['name']} — {m['number']}",
-                    callback_data=f"manual_method:{m['name']}"
-                )
-            ]
-            for m in methods
-        ]
-
-        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="deposit")])
-
-        return await q.edit_message_text(
-            "🏦 Choose a payment method:",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    if data.startswith("manual_method:"):
-        method = data.split(":", 1)[1]
-
-        with db() as c:
-            m = c.execute(
-                "SELECT * FROM payment_methods WHERE name=?",
-                (method,)
-            ).fetchone()
-
-        if not m:
-            return await q.edit_message_text(
-                "Payment method unavailable.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Back", callback_data="deposit_manual")]
-                ])
-            )
-
-        user_states[uid] = {
-            "action": "manual_amount",
-            "method": method
-        }
-
-        return await q.edit_message_text(
-            f"🏦 {m['name']}\n"
-            f"Number: {m['number']}\n"
-            f"Type: {m['instruction']}\n\n"
-            "Send the amount you paid (BDT).\n"
-            "Use /cancel to go back."
-        )
-
-    # Manual deposit approve/reject
-    if data.startswith("manual_approve:") or data.startswith("manual_reject:"):
-        if not is_admin(uid):
-            return await q.answer("Not authorized", show_alert=True)
-
-        approve = data.startswith("manual_approve:")
-        depid = int(data.split(":", 1)[1])
-
-        with db() as c:
-            dep = c.execute(
-                "SELECT * FROM deposits WHERE id=?",
-                (depid,)
-            ).fetchone()
-
-            if not dep or dep["status"] != "pending":
-                return await q.answer(
-                    "Already processed or not found",
-                    show_alert=True
-                )
-
-            if approve:
-                c.execute(
-                    "UPDATE users SET balance=balance+? WHERE id=?",
-                    (float(dep["amount"]), dep["user_id"])
-                )
-
-                c.execute(
-                    "UPDATE deposits SET credited=amount,status='success' WHERE id=?",
-                    (depid,)
-                )
-            else:
-                c.execute(
-                    "UPDATE deposits SET status='rejected' WHERE id=?",
-                    (depid,)
-                )
-
-        try:
-            await tg.bot.send_message(
-                dep["user_id"],
-                (
-                    "✅ Manual deposit approved.\nWallet credited: "
-                    + money(dep["amount"])
-                ) if approve else
-                "❌ Manual deposit was rejected. Please contact support."
-            )
-        except Exception:
-            pass
-
-        await q.edit_message_text(
-            ("✅ Approved" if approve else "❌ Rejected")
-            + f"\nDeposit ID: {depid}"
-            + f"\nUser: {dep['user_id']}"
-            + f"\nAmount: {money(dep['amount'])}"
-        )
-        return
-
-    if data == "likes":
-        with db() as c:
-            ps = c.execute(
-                "SELECT * FROM products WHERE category='likes' "
-                "AND enabled=1 ORDER BY id"
-            ).fetchall()
-
-        kb = [
-            [
-                InlineKeyboardButton(
-                    f"{p['title']} — {money(p['price'])}",
-                    callback_data=f"prod:{p['id']}"
-                )
-            ]
-            for p in ps
-        ]
-
-        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="home")])
-
-        return await q.edit_message_text(
-            "❤️ Select Likes package:",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    if data == "regions":
-        kb = [
-            [InlineKeyboardButton(REGIONS[k], callback_data="region:" + k)]
-            for k in REGIONS
-        ]
-
-        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="home")])
-
-        return await q.edit_message_text(
-            "🌍 Select region:",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    if data.startswith("region:"):
-        reg = data.split(":")[1]
-
-        if reg not in REGIONS:
-            return await q.answer("Invalid region", show_alert=True)
-
-        with db() as c:
-            cats = c.execute(
-                "SELECT DISTINCT category FROM products "
-                "WHERE region=? AND enabled=1",
-                (reg,)
-            ).fetchall()
-
-        labels = {
-            "uc": "💎 UC",
-            "shell": "🐚 Shell",
-            "tp": "🎮 Top-up",
-            "pass": "🎟 Passes",
-            "likes": "❤️ Likes"
-        }
-
-        kb = [
-            [
-                InlineKeyboardButton(
-                    labels.get(x["category"], x["category"]),
-                    callback_data=f"cat:{reg}:{x['category']}"
-                )
-            ]
-            for x in cats
-        ]
-
-        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="regions")])
-
-        return await q.edit_message_text(
-            f"{REGIONS[reg]} — select category:",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    if data.startswith("cat:"):
-        _, reg, cat = data.split(":", 2)
-
-        with db() as c:
-            ps = c.execute(
-                "SELECT * FROM products WHERE region=? AND category=? "
-                "AND enabled=1 ORDER BY id",
-                (reg, cat)
-            ).fetchall()
-
-        kb = [
-            [
-                InlineKeyboardButton(
-                    f"{p['title']} — {money(p['price'])}",
-                    callback_data=f"prod:{p['id']}"
-                )
-            ]
-            for p in ps
-        ]
-
-        kb.append([
-            InlineKeyboardButton("⬅️ Back", callback_data=f"region:{reg}")
-        ])
-
-        return await q.edit_message_text(
-            "Select product:",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    if data.startswith("prod:"):
-        pid = int(data.split(":")[1])
-
-        with db() as c:
-            p = c.execute(
-                "SELECT * FROM products WHERE id=? AND enabled=1",
-                (pid,)
-            ).fetchone()
-
-        if not p:
-            return await q.edit_message_text(
-                "Product unavailable.",
-                reply_markup=home_kb(is_admin(uid))
-            )
-
-        if p["price"] <= 0:
-            return await q.edit_message_text(
-                "এই Product-এর Selling Price Admin এখনো সেট করেনি।",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(
-                        "⬅️ Back",
-                        callback_data=f"cat:{p['region']}:{p['category']}"
-                    )
-                ]])
-            )
-
-        user_states[uid] = {
-            "action": "order",
-            "product_id": pid
-        }
-
-        ask = (
-            "Send your Free Fire Player ID:"
-            if p["api_type"] in ("tp", "likes")
-            else "Confirm purchase? Send YES to continue or /cancel."
-        )
-
-        return await q.edit_message_text(
-            f"📦 {p['title']}\n"
-            f"💰 Price: {money(p['price'])}\n{ask}\n\n"
-            "Use /cancel to go back to Home.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Home", callback_data="home")
-            ]])
-        )
-
-    if data == "myorders":
-        with db() as c:
-            rows = c.execute(
-                "SELECT id,title,status,charged FROM orders "
-                "WHERE user_id=? ORDER BY created DESC LIMIT 10",
-                (uid,)
-            ).fetchall()
-
-        if not rows:
-            return await q.edit_message_text(
-                "No orders yet.",
-                reply_markup=home_kb(is_admin(uid))
-            )
-
-        msg = "📦 Your recent orders:\n" + "\n".join(
-            f"#{r['id']} — {r['title']} — {r['status']} — {money(r['charged'])}"
-            for r in rows
-        )
-
-        return await q.edit_message_text(
-            msg,
-            reply_markup=home_kb(is_admin(uid))
-        )
-
-    if data == "admin":
-        if not is_admin(uid):
-            return await q.answer("Not authorized", show_alert=True)
-
+```python
         user_states.pop(uid, None)
 
         return await q.edit_message_text(
@@ -771,7 +426,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text(
             "Force Join channels:\n"
             + "\n".join(x["channel"] for x in chans)
-            + "\n\nSend ADD @channel or DEL @channel\nUse /cancel to go back.",
+            + "\n\nSend ADD @channel or DEL @channel",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
             ]])
@@ -779,29 +434,118 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "ap_payments":
         if not is_admin(uid):
-            return
+            return await q.answer("Not authorized", show_alert=True)
+
+        user_states.pop(uid, None)
+        with db() as c:
+            methods = c.execute(
+                "SELECT * FROM payment_methods ORDER BY name"
+            ).fetchall()
+
+        kb = [[
+            InlineKeyboardButton(
+                "➕ Add Payment Method",
+                callback_data="pay_add"
+            )
+        ]]
+
+        for m in methods:
+            kb.append([InlineKeyboardButton(
+                f"🗑️ Delete {m['name']}",
+                callback_data=f"pay_del:{m['name']}"
+            )])
+
+        kb.append([
+            InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
+        ])
+
+        listing = "\n".join(
+            f"• {m['name']} — {m['number']} ({m['instruction']})"
+            for m in methods
+        ) or "No manual methods configured."
+
+        return await q.edit_message_text(
+            "🏦 MANUAL PAYMENT SETTINGS\n\n" + listing +
+            "\n\n➕ Add দিয়ে নতুন পদ্ধতি যোগ করুন।\n"
+            "🗑️ Delete বাটন দিয়ে মুছুন।",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    if data == "pay_add":
+        if not is_admin(uid):
+            return await q.answer("Not authorized", show_alert=True)
+
+        user_states[uid] = {"action": "pay_add_name"}
+
+        return await q.edit_message_text(
+            "➕ Payment Method Name লিখুন।\nউদাহরণ: bKash",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "⬅️ Cancel",
+                    callback_data="ap_payments"
+                )
+            ]])
+        )
+
+    if data.startswith("pay_del:"):
+        if not is_admin(uid):
+            return await q.answer("Not authorized", show_alert=True)
+
+        name = data.split(":", 1)[1]
+
+        with db() as c:
+            cur = c.execute(
+                "DELETE FROM payment_methods WHERE name=?",
+                (name,)
+            )
+
+        await q.answer(
+            "Deleted" if cur.rowcount else "Not found",
+            show_alert=True
+        )
 
         with db() as c:
             methods = c.execute(
                 "SELECT * FROM payment_methods ORDER BY name"
             ).fetchall()
 
+        kb = [[
+            InlineKeyboardButton(
+                "➕ Add Payment Method",
+                callback_data="pay_add"
+            )
+        ]]
+
+        for m in methods:
+            kb.append([InlineKeyboardButton(
+                f"🗑️ Delete {m['name']}",
+                callback_data=f"pay_del:{m['name']}"
+            )])
+
+        kb.append([
+            InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
+        ])
+
         listing = "\n".join(
-            f"{m['name']}: {m['number']} ({m['instruction']})"
+            f"• {m['name']} — {m['number']} ({m['instruction']})"
             for m in methods
         ) or "No manual methods configured."
 
-        user_states[uid] = {"action": "admin_payments"}
+        return await q.edit_message_text(
+            "🏦 MANUAL PAYMENT SETTINGS\n\n" + listing,
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    if data == "pay_cancel":
+        user_states.pop(uid, None)
 
         return await q.edit_message_text(
-            "🏦 Manual Payment Methods\n"
-            + listing
-            + "\n\nCommands:\n"
-            + "SET bKash|018XXXXXXXX|Send Money\n"
-            + "DEL bKash\n\n"
-            + "Send a command below.",
+            "🏦 Manual Payment Settings",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin")
+                InlineKeyboardButton(
+                    "⬅️ Back to Settings",
+                    callback_data="ap_payments"
+                )
             ]])
         )
 
@@ -887,7 +631,334 @@ async def process_deposit(uid, trxid):
     return "❌ Verification failed: " + str(
         data.get("error", data.get("message", "Please check the Transaction ID."))
     )
-  # ================= ORDERS =================
+  # ================= CALLBACKS =================
+
+async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    uid = q.from_user.id
+    data = q.data
+
+    if data == "home":
+        user_states.pop(uid, None)
+        return await q.edit_message_text(
+            "🔥 HB TOP UP\nChoose an option:",
+            reply_markup=home_kb(is_admin(uid))
+        )
+
+    if data == "wallet":
+        with db() as c:
+            bal = c.execute(
+                "SELECT balance FROM users WHERE id=?",
+                (uid,)
+            ).fetchone()
+
+        return await q.edit_message_text(
+            f"💰 Your Wallet: {money(bal['balance'] if bal else 0)}",
+            reply_markup=home_kb(is_admin(uid))
+        )
+
+    if data == "deposit":
+        user_states.pop(uid, None)
+        kb = [
+            [InlineKeyboardButton("⚡ Auto Payment (Pinbot)", callback_data="deposit_auto")],
+            [InlineKeyboardButton("🏦 Manual Payment", callback_data="deposit_manual")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="home")]
+        ]
+
+        return await q.edit_message_text(
+            "💳 Select your deposit method:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    if data == "deposit_auto":
+        user_states[uid] = {"action": "deposit"}
+
+        return await q.edit_message_text(
+            "⚡ Auto Payment\n"
+            "Payment করার পর Transaction ID পাঠান।\n"
+            "Pinbot দিয়ে verify হবে। PIN/Password পাঠাবেন না।\n\n"
+            "নিচের Back বাটনে চাপলে Deposit Menu-তে ফিরবেন।",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back", callback_data="deposit")
+            ]])
+        )
+
+    if data == "deposit_manual":
+        user_states.pop(uid, None)
+
+        with db() as c:
+            methods = c.execute(
+                "SELECT * FROM payment_methods ORDER BY name"
+            ).fetchall()
+
+        if not methods:
+            return await q.edit_message_text(
+                "Manual payment is not configured yet. Contact support.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ Back", callback_data="deposit")
+                ]])
+            )
+
+        kb = [
+            [
+                InlineKeyboardButton(
+                    f"{m['name']} — {m['number']}",
+                    callback_data=f"manual_method:{m['name']}"
+                )
+            ]
+            for m in methods
+        ]
+
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="deposit")])
+
+        return await q.edit_message_text(
+            "🏦 Choose a payment method:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    if data.startswith("manual_method:"):
+        method = data.split(":", 1)[1]
+
+        with db() as c:
+            m = c.execute(
+                "SELECT * FROM payment_methods WHERE name=?",
+                (method,)
+            ).fetchone()
+
+        if not m:
+            return await q.edit_message_text(
+                "Payment method unavailable.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ Back", callback_data="deposit_manual")
+                ]])
+            )
+
+        user_states[uid] = {
+            "action": "manual_amount",
+            "method": method
+        }
+
+        return await q.edit_message_text(
+            f"🏦 {m['name']}\n"
+            f"Number: {m['number']}\n"
+            f"Type: {m['instruction']}\n\n"
+            "Send the amount you paid (BDT).",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back", callback_data="deposit_manual")
+            ]])
+        )
+
+    if data.startswith("manual_approve:") or data.startswith("manual_reject:"):
+        if not is_admin(uid):
+            return await q.answer("Not authorized", show_alert=True)
+
+        approve = data.startswith("manual_approve:")
+        depid = int(data.split(":", 1)[1])
+
+        with db() as c:
+            dep = c.execute(
+                "SELECT * FROM deposits WHERE id=?",
+                (depid,)
+            ).fetchone()
+
+            if not dep or dep["status"] != "pending":
+                return await q.answer(
+                    "Already processed or not found",
+                    show_alert=True
+                )
+
+            if approve:
+                c.execute(
+                    "UPDATE users SET balance=balance+? WHERE id=?",
+                    (float(dep["amount"]), dep["user_id"])
+                )
+
+                c.execute(
+                    "UPDATE deposits SET credited=amount,status='success' WHERE id=?",
+                    (depid,)
+                )
+            else:
+                c.execute(
+                    "UPDATE deposits SET status='rejected' WHERE id=?",
+                    (depid,)
+                )
+
+        try:
+            await tg.bot.send_message(
+                dep["user_id"],
+                (
+                    "✅ Manual deposit approved.\nWallet credited: "
+                    + money(dep["amount"])
+                ) if approve else
+                "❌ Manual deposit was rejected. Please contact support."
+            )
+        except Exception:
+            pass
+
+        await q.edit_message_text(
+            ("✅ Approved" if approve else "❌ Rejected")
+            + f"\nDeposit ID: {depid}"
+            + f"\nUser: {dep['user_id']}"
+            + f"\nAmount: {money(dep['amount'])}"
+        )
+        return
+
+    if data == "regions":
+        kb = [
+            [InlineKeyboardButton(REGIONS[k], callback_data="region:" + k)]
+            for k in REGIONS
+        ]
+
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="home")])
+
+        return await q.edit_message_text(
+            "🌍 Select region:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    if data.startswith("region:"):
+        reg = data.split(":")[1]
+
+        if reg not in REGIONS:
+            return await q.answer("Invalid region", show_alert=True)
+
+        with db() as c:
+            cats = c.execute(
+                "SELECT DISTINCT category FROM products "
+                "WHERE region=? AND enabled=1",
+                (reg,)
+            ).fetchall()
+
+        labels = {
+            "uc": "💎 UC",
+            "shell": "🐚 Shell",
+            "tp": "🎮 Top-up / Pass",
+            "pass": "🎟 Passes",
+            "likes": "❤️ Likes"
+        }
+
+        kb = [
+            [
+                InlineKeyboardButton(
+                    labels.get(x["category"], x["category"]),
+                    callback_data=f"cat:{reg}:{x['category']}"
+                )
+            ]
+            for x in cats
+        ]
+
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="regions")])
+
+        return await q.edit_message_text(
+            f"{REGIONS[reg]} — select category:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    if data.startswith("cat:"):
+        _, reg, cat = data.split(":")
+
+        with db() as c:
+            ps = c.execute(
+                "SELECT * FROM products WHERE region=? AND category=? "
+                "AND enabled=1 ORDER BY id",
+                (reg, cat)
+            ).fetchall()
+
+        kb = [
+            [
+                InlineKeyboardButton(
+                    f"{p['title']} — {money(p['price'])}",
+                    callback_data=f"prod:{p['id']}"
+                )
+            ]
+            for p in ps
+        ]
+
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data=f"region:{reg}")])
+
+        return await q.edit_message_text(
+            "Select product:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    if data.startswith("prod:"):
+        pid = int(data.split(":")[1])
+
+        with db() as c:
+            p = c.execute(
+                "SELECT * FROM products WHERE id=? AND enabled=1",
+                (pid,)
+            ).fetchone()
+
+        if not p:
+            return await q.edit_message_text(
+                "Product unavailable.",
+                reply_markup=home_kb(is_admin(uid))
+            )
+
+        if p["price"] <= 0:
+            return await q.edit_message_text(
+                "এই Product-এর Selling Price Admin এখনো সেট করেনি।",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "⬅️ Back",
+                        callback_data=f"cat:{p['region']}:{p['category']}"
+                    )
+                ]])
+            )
+
+        user_states[uid] = {
+            "action": "order",
+            "product_id": pid
+        }
+
+        ask = (
+            "Send your Free Fire Player ID:"
+            if p["api_type"] in ("tp", "likes")
+            else "Confirm purchase? Send YES to continue or /cancel."
+        )
+
+        return await q.edit_message_text(
+            f"📦 {p['title']}\n"
+            f"💰 Price: {money(p['price'])}\n{ask}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data=f"cat:{p['region']}:{p['category']}"
+                )
+            ]])
+        )
+
+    if data == "myorders":
+        with db() as c:
+            rows = c.execute(
+                "SELECT id,title,status,charged FROM orders "
+                "WHERE user_id=? ORDER BY created DESC LIMIT 10",
+                (uid,)
+            ).fetchall()
+
+        if not rows:
+            return await q.edit_message_text(
+                "No orders yet.",
+                reply_markup=home_kb(is_admin(uid))
+            )
+
+        msg = "📦 Your recent orders:\n" + "\n".join(
+            f"#{r['id']} — {r['title']} — {r['status']} — {money(r['charged'])}"
+            for r in rows
+        )
+
+        return await q.edit_message_text(
+            msg,
+            reply_markup=home_kb(is_admin(uid))
+        )
+
+    if data == "admin":
+        if not is_admin(uid):
+            return await q.answer("Not authorized", show_alert=True)
+          # ================= ORDERS =================
 
 async def place_order(uid, pid, playerid):
     with db() as c:
@@ -1080,9 +1151,7 @@ async def place_order(uid, pid, playerid):
     )
 
     return f"❌ Order failed. {money(price)} refunded to your wallet."
-
-
-# ================= TEXT HANDLER =================
+  # ================= TEXT HANDLER =================
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1090,63 +1159,105 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     st = user_states.get(uid)
 
-    # Manual payment SET/DEL works even when admin state is missing.
-    if is_admin(uid):
-        normalized = msg.replace("｜", "|").replace("¦", "|")
-        parts = [x.strip() for x in normalized.split("|", 2)]
+    # Manual payment button wizard
+    if st and is_admin(uid) and msg == "/cancel":
+        user_states.pop(uid, None)
+        return await update.message.reply_text(
+            "Cancelled.",
+            reply_markup=admin_kb()
+        )
 
-        if parts and parts[0].upper() in ("SET", "DEL"):
-            try:
-                if len(parts) == 3 and parts[0].upper() == "SET":
-                    name, number, instruction = parts
+    if st and is_admin(uid) and st.get("action") == "pay_add_name":
+        name = msg.strip()
 
-                    if not name or not number:
-                        raise ValueError("Missing method name or number")
+        if not 2 <= len(name) <= 30:
+            return await update.message.reply_text(
+                "❌ Method name 2-30 characters দিন।"
+            )
 
-                    with db() as c:
-                        c.execute(
-                            "INSERT INTO payment_methods(name,number,instruction) "
-                            "VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET "
-                            "number=excluded.number,instruction=excluded.instruction",
-                            (name, number, instruction or "Send Money")
-                        )
+        user_states[uid] = {
+            "action": "pay_add_number",
+            "name": name
+        }
 
-                    user_states.pop(uid, None)
-
-                    return await update.message.reply_text(
-                        f"✅ Manual payment method saved!\n"
-                        f"Method: {name}\n"
-                        f"Number: {number}\n"
-                        f"Instruction: {instruction or 'Send Money'}",
-                        reply_markup=admin_kb()
-                    )
-
-                if len(parts) == 2 and parts[0].upper() == "DEL":
-                    with db() as c:
-                        cur = c.execute(
-                            "DELETE FROM payment_methods WHERE name=?",
-                            (parts[1],)
-                        )
-
-                    user_states.pop(uid, None)
-
-                    return await update.message.reply_text(
-                        "✅ Payment method deleted."
-                        if cur.rowcount else "⚠️ Payment method not found.",
-                        reply_markup=admin_kb()
-                    )
-
-                return await update.message.reply_text(
-                    "Wrong format. Use exactly:\n"
-                    "SET bKash|01820583511|Send Money\n"
-                    "DEL bKash"
+        return await update.message.reply_text(
+            f"✅ Method: {name}\nএবার Payment Number পাঠান।",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "⬅️ Cancel",
+                    callback_data="pay_cancel"
                 )
+            ]])
+        )
 
-            except Exception:
-                log.exception("Manual payment settings command failed")
-                return await update.message.reply_text(
-                    "Could not save payment method. Check the details and try again."
+    if st and is_admin(uid) and st.get("action") == "pay_add_number":
+        number = msg.strip()
+
+        if not 5 <= len(number) <= 40:
+            return await update.message.reply_text(
+                "❌ সঠিক Payment Number দিন।"
+            )
+
+        user_states[uid] = {
+            "action": "pay_add_instruction",
+            "name": st["name"],
+            "number": number
+        }
+
+        return await update.message.reply_text(
+            "এবার Payment Type লিখুন। উদাহরণ: Send Money",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "⬅️ Cancel",
+                    callback_data="pay_cancel"
                 )
+            ]])
+        )
+
+    if st and is_admin(uid) and st.get("action") == "pay_add_instruction":
+        instruction = msg.strip()
+
+        if not 2 <= len(instruction) <= 50:
+            return await update.message.reply_text(
+                "❌ Payment Type 2-50 characters দিন।"
+            )
+
+        name = st["name"]
+        number = st["number"]
+
+        with db() as c:
+            c.execute(
+                """INSERT INTO payment_methods
+                (name,number,instruction)
+                VALUES(?,?,?)
+                ON CONFLICT(name) DO UPDATE SET
+                number=excluded.number,
+                instruction=excluded.instruction""",
+                (name, number, instruction)
+            )
+
+        user_states.pop(uid, None)
+
+        return await update.message.reply_text(
+            f"✅ PAYMENT METHOD SAVED!\n\n"
+            f"🏦 Method: {name}\n"
+            f"📱 Number: {number}\n"
+            f"💳 Type: {instruction}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🏦 Payment Settings",
+                        callback_data="ap_payments"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Admin Panel",
+                        callback_data="admin"
+                    )
+                ]
+            ])
+        )
 
     if not st:
         return
@@ -1177,7 +1288,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except ValueError:
             return await update.message.reply_text(
-                "Enter a valid amount in BDT."
+                "Enter a valid amount in BDT.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "⬅️ Cancel",
+                        callback_data="pay_cancel"
+                    )
+                ]])
             )
 
         user_states[uid] = {
@@ -1188,7 +1305,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return await update.message.reply_text(
             "Now send the payment Transaction ID. "
-            "Do not send PIN or password."
+            "Do not send PIN or password.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "⬅️ Cancel",
+                    callback_data="pay_cancel"
+                )
+            ]])
         )
 
     if action == "manual_trxid":
@@ -1216,7 +1339,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (user_id,trxid,amount,credited,status,response,created)
                 VALUES(?,?,?,0,'pending',?,?)""",
                 (
-                    uid, msg, amount,
+                    uid,
+                    msg,
+                    amount,
                     json.dumps({
                         "method": method,
                         "transaction_id": msg
@@ -1247,8 +1372,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await tg.bot.send_message(
                     admin,
                     f"🏦 MANUAL DEPOSIT REQUEST\n"
-                    f"Deposit: {depid}\nUser: {uid}\n"
-                    f"Method: {method}\nAmount: {money(amount)}\n"
+                    f"Deposit: {depid}\n"
+                    f"User: {uid}\n"
+                    f"Method: {method}\n"
+                    f"Amount: {money(amount)}\n"
                     f"TRX ID: {msg}",
                     reply_markup=kb
                 )
@@ -1281,7 +1408,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states.pop(uid, None)
         return
 
-    if action == "admin_products":
+    elif action == "admin_products":
         parts = msg.split()
 
         try:
@@ -1292,7 +1419,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         (float(parts[2]), int(parts[1]))
                     )
 
-                    await update.message.reply_text("✅ Price updated.")
+                    await update.message.reply_text(
+                        "✅ Price updated."
+                    )
 
                 elif len(parts) == 2 and parts[0].upper() in ("ON", "OFF"):
                     c.execute(
@@ -1303,7 +1432,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     )
 
-                    await update.message.reply_text("✅ Product updated.")
+                    await update.message.reply_text(
+                        "✅ Product updated."
+                    )
 
                 else:
                     await update.message.reply_text(
@@ -1311,7 +1442,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
 
         except Exception:
-            await update.message.reply_text("Invalid command.")
+            await update.message.reply_text(
+                "Invalid command."
+            )
 
     elif action == "admin_users":
         parts = msg.split()
@@ -1371,7 +1504,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db() as c:
             ids = [
                 r["id"]
-                for r in c.execute("SELECT id FROM users").fetchall()
+                for r in c.execute(
+                    "SELECT id FROM users"
+                ).fetchall()
             ]
 
         sent = 0
@@ -1411,9 +1546,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "Use ADD @channel or DEL @channel"
             )
-
-
-# ================= FORCE JOIN =================
+          # ================= FORCE JOIN =================
 
 async def force_join_ok(uid, context):
     with db() as c:
@@ -1482,7 +1615,7 @@ tg.add_handler(
 async def startup():
     init_db()
 
-    if "PASTE_YOUR" in BOT_TOKEN or "PASTE_YOUR" in PINBOT_API_KEY:
+    if "PASTE_NEW" in BOT_TOKEN or "PASTE_NEW" in PINBOT_API_KEY:
         log.warning("Set BOT_TOKEN and PINBOT_API_KEY before deployment")
 
     await tg.initialize()
